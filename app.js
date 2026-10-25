@@ -2,7 +2,7 @@
    SETUP: Replace CSV_URL with the published CSV URL for the THA Akluj tab.
    Do not paste an edit URL. See README.md for the exact steps.
 */
-const CSV_URL = "PASTE_PUBLISHED_THA_AKLUJ_CSV_URL_HERE";
+const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTG6up-T62Nqm9cx6OSLzjzSD-VgT19juQAyrhcqiMpCp7YNXDr9oweSRPzDIHfVlaGJu9k9fPp6pgf/pub?gid=1330000360&single=true&output=csv";
 const REFRESH_INTERVAL_MS = 60 * 1000;
 let sourceRows = [];
 let headers = [];
