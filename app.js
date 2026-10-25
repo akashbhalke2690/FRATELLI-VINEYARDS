@@ -1,611 +1,310 @@
+/* FRATELLI VINEYARDS - THA Akluj analysis viewer
+   Displays only the 10 requested laboratory columns.
+   Data source: published CSV for the THA Akluj tab.
+   Keep the Google Sheet unchanged; this app is read-only.
+*/
+const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTG6up-T62Nqm9cx6OSLzjzSD-VgT19juQAyrhcqiMpCp7YNXDr9oweSRPzDIHfVlaGJu9k9fPp6pgf/pub?gid=1330000360&single=true&output=csv";
+const REFRESH_INTERVAL_MS = 60 * 1000;
 
-"use strict";
+let sourceRows = [];
+let headers = [];
+let lastFetchTime = null;
 
-/* =========================================================
-   FRATELLI WINERY LAB PWA
-   Google Sheets CSV connection
-   ========================================================= */
+const $ = (id) => document.getElementById(id);
 
-const CONFIG = {
-  labCsvUrl:
-    "https://docs.google.com/spreadsheets/d/e/2PACX-1vTG6up-T62Nqm9cx6OSLzjzSD-VgT19juQAyrhcqiMpCp7YNXDr9oweSRPzDIHfVlaGJu9k9fPp6pgf/pub?gid=1330000360&single=true&output=csv",
-
-  refreshInterval: 60000
-};
-
-const COLUMNS = [
-  "TANK NO",
-  "Vol (HL)",
-  "VINTAGE",
-  "VERITY",
-  "Date of Analysis",
-  "Alc %",
-  "T.A",
-  "pH",
-  "FSO2",
-  "TSO2"
+const VISIBLE_COLUMNS = [
+  { label: "TANK NO", aliases: ["TANK NO", "TANK NUMBER", "TANK", "VESSEL", "TANKNAME"] },
+  { label: "Vol (HL)", aliases: ["VOL (HL)", "VOL HL", "VOLUME HL", "VOLUME", "VOL"] },
+  { label: "VINTAGE", aliases: ["VINTAGE", "YEAR"] },
+  { label: "VERITY", aliases: ["VERITY", "VARIETY", "GRAPE VARIETY"] },
+  { label: "Date of Analysis", aliases: ["DATE OF ANALYSIS", "ANALYSIS DATE", "SAMPLE DATE", "SAMPLING DATE", "DATE"] },
+  { label: "Alc %", aliases: ["ALC %", "ALCOHOL %", "ALCOHOL", "ABV"] },
+  { label: "T.A", aliases: ["T.A", "TA", "TOTAL ACIDITY", "TITRATABLE ACIDITY"] },
+  { label: "pH", aliases: ["PH"] },
+  { label: "FSO2", aliases: ["FSO2", "FREE SO2", "FREE SULPHUR DIOXIDE", "FREE SULFUR DIOXIDE"] },
+  { label: "TSO2", aliases: ["TSO2", "TOTAL SO2", "TOTAL SULPHUR DIOXIDE", "TOTAL SULFUR DIOXIDE"] }
 ];
-
-let allRows = [];
-let isLoading = false;
-
-/* =========================================================
-   ELEMENTS
-   Supports the IDs used in the PWA HTML.
-   ========================================================= */
-
-function getElement(...ids) {
-  for (const id of ids) {
-    const element = document.getElementById(id);
-    if (element) return element;
-  }
-  return null;
-}
-
-const elements = {
-  search: getElement("searchInput"),
-  groupBy: getElement("analysisFilter", "viewMode", "groupBy"),
-  typeFilter: getElement("typeFilter"),
-  tableHead: getElement("tableHead"),
-  tableBody: getElement("tableBody"),
-  status: getElement("status"),
-  message: getElement("message"),
-  resultSummary: getElement("resultSummary"),
-  results: getElement("results"),
-  rowCount: getElement("rowCount"),
-  groupCount: getElement("groupCount"),
-  latestDate: getElement("latestDate"),
-  emptyState: getElement("emptyState"),
-  refresh: getElement("refreshBtn"),
-  clear: getElement("clearBtn")
-};
-
-/* =========================================================
-   NORMALIZE TEXT
-   This makes "CS", "cs" and " CS " match as one variety.
-   ========================================================= */
-
-function normalizeText(value) {
-  return String(value ?? "")
-    .normalize("NFKC")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toUpperCase();
-}
-
-function getCell(row, column) {
-  return row[column] ?? "";
-}
-
-/* =========================================================
-   CSV PARSER
-   Handles commas, quotation marks and quoted line breaks.
-   ========================================================= */
 
 function parseCSV(text) {
   const rows = [];
   let row = [];
   let cell = "";
-  let inQuotes = false;
-
-  text = String(text ?? "").replace(/^\uFEFF/, "");
+  let quoted = false;
 
   for (let i = 0; i < text.length; i++) {
-    const char = text[i];
+    const c = text[i];
     const next = text[i + 1];
 
-    if (char === '"') {
-      if (inQuotes && next === '"') {
-        cell += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === "," && !inQuotes) {
+    if (c === '"' && quoted && next === '"') {
+      cell += '"';
+      i++;
+    } else if (c === '"') {
+      quoted = !quoted;
+    } else if (c === ',' && !quoted) {
       row.push(cell);
       cell = "";
-    } else if (
-      (char === "\n" || char === "\r") &&
-      !inQuotes
-    ) {
-      if (char === "\r" && next === "\n") i++;
-
+    } else if ((c === '\n' || c === '\r') && !quoted) {
+      if (c === '\r' && next === '\n') i++;
       row.push(cell);
-
-      if (row.some(value => String(value).trim() !== "")) {
-        rows.push(row);
-      }
-
+      if (row.some(v => v.trim() !== "")) rows.push(row);
       row = [];
       cell = "";
     } else {
-      cell += char;
+      cell += c;
     }
   }
 
-  if (cell.length > 0 || row.length > 0) {
+  if (cell.length || row.length) {
     row.push(cell);
-
-    if (row.some(value => String(value).trim() !== "")) {
-      rows.push(row);
-    }
+    if (row.some(v => v.trim() !== "")) rows.push(row);
   }
 
-  if (rows.length === 0) return [];
-
-  const headers = rows.shift().map(header =>
-    String(header).replace(/^\uFEFF/, "").trim()
-  );
-
-  return rows.map(values => {
-    const record = {};
-
-    headers.forEach((header, index) => {
-      record[header] = String(values[index] ?? "").trim();
-    });
-
-    return record;
-  });
+  return rows;
 }
 
-/* =========================================================
-   FIND SOURCE COLUMN
-   Handles minor header formatting differences.
-   ========================================================= */
-
-function findColumn(row, wantedColumn) {
-  const wanted = normalizeText(wantedColumn);
-  const actual = Object.keys(row).find(
-    key => normalizeText(key) === wanted
-  );
-
-  return actual || null;
+function norm(s) {
+  return String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
-function readColumn(row, wantedColumn) {
-  const key = findColumn(row, wantedColumn);
-  return key ? String(row[key] ?? "").trim() : "";
-}
+function findColumn(names) {
+  const normalized = headers.map(norm);
 
-/* =========================================================
-   FILTER INVALID ROWS
-   Excludes only rows whose TANK NO is exactly "0".
-   ========================================================= */
-
-function cleanRows(rows) {
-  return rows
-    .filter(row => {
-      const tank = normalizeText(readColumn(row, "TANK NO"));
-      return tank !== "0";
-    })
-    .map(row => {
-      const clean = {};
-
-      COLUMNS.forEach(column => {
-        clean[column] = readColumn(row, column);
-      });
-
-      return clean;
-    });
-}
-
-/* =========================================================
-   STATUS
-   Hide informational messages requested for this PWA.
-   ========================================================= */
-
-function hideStatusMessages() {
-  [elements.status, elements.message].forEach(element => {
-    if (!element) return;
-
-    element.textContent = "";
-    element.hidden = true;
-    element.style.display = "none";
-  });
-}
-
-function showStatus(message, isError = false) {
-  hideStatusMessages();
-
-  // Only show an actual error if loading fails.
-  if (!isError || !elements.status) return;
-
-  elements.status.textContent = message;
-  elements.status.hidden = false;
-  elements.status.style.display = "";
-}
-
-/* =========================================================
-   FETCH GOOGLE SHEETS CSV
-   ========================================================= */
-
-async function loadData() {
-  if (isLoading) return;
-
-  isLoading = true;
-
-  if (elements.refresh) {
-    elements.refresh.disabled = true;
+  for (const name of names) {
+    const i = normalized.findIndex(h => h === norm(name));
+    if (i >= 0) return i;
   }
 
-  try {
-    const separator = CONFIG.labCsvUrl.includes("?") ? "&" : "?";
-    const url = CONFIG.labCsvUrl + separator + "_=" + Date.now();
-
-    const response = await fetch(url, {
-      method: "GET",
-      cache: "no-store"
-    });
-
-    if (!response.ok) {
-      throw new Error("Google Sheets returned HTTP " + response.status);
-    }
-
-    const csvText = await response.text();
-
-    if (!csvText.trim() || csvText.trim().startsWith("<!DOCTYPE")) {
-      throw new Error(
-        "The published CSV is empty or did not return CSV data."
-      );
-    }
-
-    const parsedRows = parseCSV(csvText);
-
-    if (parsedRows.length === 0) {
-      throw new Error("No laboratory rows were found in the CSV.");
-    }
-
-    allRows = cleanRows(parsedRows);
-
-    renderTable();
-    hideStatusMessages();
-  } catch (error) {
-    console.error("Unable to load winery laboratory data:", error);
-
-    showStatus(
-      "Unable to load Google Sheets data. Check the published CSV URL and internet connection, then refresh.",
-      true
-    );
-
-    // Keep any previously loaded data on screen.
-    if (allRows.length > 0) {
-      renderTable();
-    }
-  } finally {
-    isLoading = false;
-
-    if (elements.refresh) {
-      elements.refresh.disabled = false;
-    }
+  for (const name of names) {
+    const i = normalized.findIndex(h => h.includes(norm(name)));
+    if (i >= 0) return i;
   }
+
+  return -1;
 }
 
-/* =========================================================
-   SEARCH
-   Search ONLY the VERITY (wine variety) column.
-   ========================================================= */
+function parseDate(value) {
+  if (value == null || String(value).trim() === "") return null;
 
-function getFilteredRows() {
-  const searchText = normalizeText(
-    elements.search ? elements.search.value : ""
+  const s = String(value).trim();
+  const m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
+
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    let y = Number(m[3]);
+    if (y < 100) y += y < 50 ? 2000 : 1900;
+
+    // Prefer day/month/year for winery records unless the first number
+    // clearly represents a month and the second clearly represents a day.
+    const day = a > 12 ? a : b > 12 ? b : a;
+    const month = a > 12 ? b : b > 12 ? a : b;
+    const dt = new Date(y, month - 1, day);
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  }
+
+  const dt = new Date(s);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function dateText(value) {
+  const d = parseDate(value);
+  return d
+    ? d.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })
+    : (value || "—");
+}
+
+function setStatus(message, error = false) {
+  const el = $("status");
+  if (!el) return;
+  el.textContent = message;
+  el.classList.toggle("error", error);
+}
+
+function showMessage(message) {
+  const el = $("message");
+  if (!el) return;
+  el.textContent = message;
+  el.hidden = !message;
+}
+
+function objectRows() {
+  return sourceRows.map(cells =>
+    Object.fromEntries(headers.map((h, i) => [h, cells[i] ?? ""]))
   );
+}
 
-  const selectedType = normalizeText(
-    elements.typeFilter ? elements.typeFilter.value : ""
-  );
+function pickValue(row, idx) {
+  return idx >= 0 ? String(row[headers[idx]] ?? "").trim() : "";
+}
 
-  return allRows.filter(row => {
-    const variety = normalizeText(row["VERITY"]);
+function getVisibleColumns() {
+  return VISIBLE_COLUMNS.map(col => ({
+    label: col.label,
+    index: findColumn(col.aliases)
+  }));
+}
 
-    // Search only the wine variety field.
-    if (searchText && !variety.includes(searchText)) {
-      return false;
-    }
+function render() {
+  const all = objectRows();
 
-    if (
-      selectedType &&
-      selectedType !== "ALL" &&
-      selectedType !== "ALL TYPES" &&
-      normalizeText(row["VINTAGE"]) !== selectedType &&
-      normalizeText(row["VERITY"]) !== selectedType
-    ) {
-      return false;
+  if (!all.length) {
+    $("results").innerHTML = "";
+    $("rowCount").textContent = "0";
+    $("groupCount").textContent = "0";
+    $("latestDate").textContent = "—";
+    return;
+  }
+
+  const tankIdx = findColumn(["tank", "tank no", "tank number", "vessel", "tankname"]);
+  const wineIdx = findColumn(["wine", "wine name", "wine type", "product", "variety", "brand"]);
+  const dateIdx = findColumn(["analysis date", "date of analysis", "sample date", "date", "analysisdate", "sampling date"]);
+
+  const search = $("searchInput").value.toLowerCase().trim();
+  const mode = $("viewMode").value;
+  const from = $("dateFilter").value
+    ? new Date($("dateFilter").value + "T00:00:00")
+    : null;
+
+  const filtered = all.filter(row => {
+    const vals = headers.map(h => String(row[h] ?? ""));
+    if (search && !vals.some(v => v.toLowerCase().includes(search))) return false;
+
+    if (from && dateIdx >= 0) {
+      const d = parseDate(row[headers[dateIdx]]);
+      if (!d || d < from) return false;
     }
 
     return true;
   });
-}
 
-/* =========================================================
-   GROUPING MODE
-   Recognizes common dropdown values for wine grouping.
-   ========================================================= */
+  const dateOf = row => dateIdx >= 0 ? parseDate(row[headers[dateIdx]]) : null;
+  const allDates = filtered.map(dateOf).filter(Boolean).sort((a, b) => b - a);
 
-function getGroupingMode() {
-  if (!elements.groupBy) return "none";
+  $("latestDate").textContent = allDates.length
+    ? allDates[0].toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })
+    : "—";
+  $("rowCount").textContent = String(filtered.length);
 
-  const value = normalizeText(elements.groupBy.value);
-
-  if (
-    value.includes("WINE") ||
-    value.includes("VERITY") ||
-    value.includes("VARIETY")
-  ) {
-    return "wine";
-  }
-
-  if (value.includes("VINTAGE") || value.includes("YEAR")) {
-    return "vintage";
-  }
-
-  if (value.includes("TANK")) {
-    return "tank";
-  }
-
-  // Options such as None, All, or no grouping.
-  return "none";
-}
-
-function getGroupName(row, mode) {
-  if (mode === "wine") {
-    return normalizeText(row["VERITY"]);
-  }
-
-  if (mode === "vintage") {
-    return normalizeText(row["VINTAGE"]);
-  }
-
-  if (mode === "tank") {
-    return normalizeText(row["TANK NO"]);
-  }
-
-  return "";
-}
-
-function getDisplayGroupName(row, mode) {
-  if (mode === "wine") return row["VERITY"].trim();
-  if (mode === "vintage") return row["VINTAGE"].trim();
-  if (mode === "tank") return row["TANK NO"].trim();
-
-  return "";
-}
-
-/* =========================================================
-   GROUP ROWS
-   One group per normalized wine variety.
-   Blank variety names are not placed in an "Uncategorised"
-   group; they remain individual rows.
-   ========================================================= */
-
-function groupRows(rows, mode) {
-  if (mode === "none") {
-    return [{ name: "", rows }];
-  }
+  const keyOf = row =>
+    mode === "tank"
+      ? (tankIdx >= 0 && row[headers[tankIdx]]
+          ? row[headers[tankIdx]]
+          : (wineIdx >= 0 ? row[headers[wineIdx]] : "Uncategorised"))
+      : mode === "wine"
+        ? (wineIdx >= 0 && row[headers[wineIdx]]
+            ? row[headers[wineIdx]]
+            : (tankIdx >= 0 ? row[headers[tankIdx]] : "Uncategorised"))
+        : "All analysis rows";
 
   const groups = new Map();
-  const blankNameRows = [];
+  filtered.forEach(row => {
+    const key = keyOf(row);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  });
 
-  rows.forEach(row => {
-    const key = getGroupName(row, mode);
+  $("groupCount").textContent = String(groups.size);
+  const sorted = [...groups.entries()].sort((a, b) =>
+    a[0].localeCompare(b[0], undefined, { numeric: true })
+  );
 
-    if (!key) {
-      blankNameRows.push(row);
-      return;
+  if (!filtered.length) {
+    $("results").innerHTML = '<div class="empty">No analysis rows match your search.</div>';
+    return;
+  }
+
+  const cols = getVisibleColumns();
+  const missingColumns = cols.filter(c => c.index < 0).map(c => c.label);
+
+  $("results").innerHTML = sorted.map(([name, rows]) => {
+    rows.sort((a, b) => (dateOf(b)?.getTime() || 0) - (dateOf(a)?.getTime() || 0));
+    const latest = rows.map(dateOf).filter(Boolean).sort((a, b) => b - a)[0];
+
+    const table = `<div class="table-wrap"><table><thead><tr>${
+      cols.map(c => `<th>${escapeHTML(c.label)}</th>`).join("")
+    }</tr></thead><tbody>${
+      rows.map(r => `<tr>${
+        cols.map(c => {
+          const value = c.index >= 0 ? (r[headers[c.index]] ?? "") : "";
+          return `<td>${escapeHTML(String(value).trim() || "—")}</td>`;
+        }).join("")
+      }</tr>`).join("")
+    }</tbody></table></div>`;
+
+    return `<article class="group-card"><div class="group-head"><div><h3>${escapeHTML(name)}</h3><small>${rows.length} analysis row${rows.length === 1 ? "" : "s"}</small></div><span class="latest-pill">Latest: ${latest ? latest.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "Date unavailable"}</span></div>${table}</article>`;
+  }).join("");
+
+  if (missingColumns.length) {
+    showMessage("Connected, but these columns were not matched in the sheet: " + missingColumns.join(", ") + ". Their cells show —. Check the exact heading names in Google Sheets.");
+  } else {
+    showMessage("Read-only view. Showing only the 10 requested columns from the published THA Akluj tab.");
+  }
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  }[c]));
+}
+
+async function refreshData() {
+  if (!CSV_URL || CSV_URL.includes("PASTE_PUBLISHED")) {
+    setStatus("Setup needed", true);
+    showMessage("The app files are ready. Complete Step 2 in README.md, then paste the published CSV URL into app.js.");
+    return;
+  }
+
+  $("refreshBtn").disabled = true;
+  $("refreshBtn").textContent = "↻ Loading…";
+  setStatus("Connecting to Google Sheets…");
+
+  try {
+    const url = new URL(CSV_URL);
+    url.searchParams.set("_refresh", String(Date.now()));
+
+    const response = await fetch(url.toString(), { cache: "no-store" });
+    if (!response.ok) throw new Error("Google Sheets returned HTTP " + response.status);
+
+    const text = await response.text();
+    if (/<!doctype html|<html/i.test(text.slice(0, 500))) {
+      throw new Error("Received a web page instead of CSV. Check the published CSV URL in app.js.");
     }
 
-    if (!groups.has(key)) {
-      groups.set(key, {
-        name: getDisplayGroupName(row, mode),
-        rows: []
-      });
-    }
+    const parsed = parseCSV(text);
+    if (parsed.length < 2) throw new Error("CSV has no data rows, or the tab is empty.");
 
-    groups.get(key).rows.push(row);
-  });
+    headers = parsed[0].map((h, i) =>
+      i === 0 ? h.replace(/^\uFEFF/, "").trim() : h.trim()
+    );
+    sourceRows = parsed.slice(1).filter(r => r.some(c => String(c).trim() !== ""));
 
-  const sortedGroups = Array.from(groups.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([, group]) => group);
-
-  // Keep rows with blank grouping values visible without
-  // creating an "Uncategorised" box.
-  blankNameRows.forEach(row => {
-    sortedGroups.push({
-      name: "",
-      rows: [row]
-    });
-  });
-
-  return sortedGroups;
+    lastFetchTime = new Date();
+    $("updatedAt").textContent = "Fetched " + lastFetchTime.toLocaleTimeString();
+    setStatus("Connected · " + sourceRows.length + " rows");
+    render();
+  } catch (err) {
+    setStatus("Could not refresh data", true);
+    showMessage("Could not load the sheet: " + err.message + " Check that the THA Akluj tab is published as CSV and the URL in app.js is correct.");
+  } finally {
+    $("refreshBtn").disabled = false;
+    $("refreshBtn").textContent = "↻ Refresh";
+  }
 }
 
-/* =========================================================
-   SAFE HTML TEXT
-   ========================================================= */
+$("refreshBtn").addEventListener("click", refreshData);
+$("searchInput").addEventListener("input", render);
+$("viewMode").addEventListener("change", render);
+$("dateFilter").addEventListener("change", render);
 
-function escapeHTML(value) {
-  return String(value ?? "").replace(/[&<>"']/g, char => {
-    const replacements = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;"
-    };
-
-    return replacements[char];
-  });
-}
-
-/* =========================================================
-   TABLE HEADER
-   Always show all 10 columns.
-   ========================================================= */
-
-function renderHeader() {
-  if (!elements.tableHead) return;
-
-  elements.tableHead.innerHTML =
-    "<tr>" +
-    COLUMNS.map(column =>
-      "<th>" + escapeHTML(column) + "</th>"
-    ).join("") +
-    "</tr>";
-}
-
-/* =========================================================
-   TABLE ROW
-   ========================================================= */
-
-function renderDataRow(row) {
-  return (
-    "<tr>" +
-    COLUMNS.map(column =>
-      "<td>" + escapeHTML(row[column]) + "</td>"
-    ).join("") +
-    "</tr>"
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  window.addEventListener("load", () =>
+    navigator.serviceWorker.register("./service-worker.js").catch(() => {})
   );
 }
 
-/* =========================================================
-   TABLE BODY
-   Group headings are displayed inside the table.
-   ========================================================= */
-
-function renderBody(rows) {
-  if (!elements.tableBody) return;
-
-  const mode = getGroupingMode();
-  const groups = groupRows(rows, mode);
-
-  let html = "";
-
-  groups.forEach(group => {
-    if (mode !== "none" && group.name) {
-      html +=
-        '<tr class="group-heading">' +
-        '<td colspan="' + COLUMNS.length + '">' +
-        escapeHTML(group.name) +
-        " (" + group.rows.length + ")" +
-        "</td></tr>";
-    }
-
-    group.rows.forEach(row => {
-      html += renderDataRow(row);
-    });
-  });
-
-  elements.tableBody.innerHTML = html;
-}
-
-/* =========================================================
-   SUMMARY AND EMPTY STATE
-   ========================================================= */
-
-function updateSummary(rows, groups) {
-  if (elements.resultSummary) {
-    elements.resultSummary.textContent =
-      rows.length + (rows.length === 1 ? " row" : " rows");
-  }
-
-  if (elements.results) {
-    elements.results.textContent = rows.length;
-  }
-
-  if (elements.rowCount) {
-    elements.rowCount.textContent = rows.length;
-  }
-
-  if (elements.groupCount) {
-    elements.groupCount.textContent = groups.length;
-  }
-
-  if (elements.latestDate) {
-    const dates = rows
-      .map(row => row["Date of Analysis"])
-      .filter(Boolean);
-
-    elements.latestDate.textContent = dates.length
-      ? dates.sort().at(-1)
-      : "—";
-  }
-
-  if (elements.emptyState) {
-    elements.emptyState.hidden = rows.length > 0;
-    elements.emptyState.style.display =
-      rows.length > 0 ? "none" : "";
-  }
-}
-
-/* =========================================================
-   RENDER EVERYTHING
-   ========================================================= */
-
-function renderTable() {
-  hideStatusMessages();
-
-  const filteredRows = getFilteredRows();
-  const mode = getGroupingMode();
-  const groups = groupRows(filteredRows, mode);
-
-  renderHeader();
-  renderBody(filteredRows);
-  updateSummary(filteredRows, groups);
-}
-
-/* =========================================================
-   EVENT LISTENERS
-   ========================================================= */
-
-if (elements.search) {
-  elements.search.addEventListener("input", renderTable);
-}
-
-if (elements.groupBy) {
-  elements.groupBy.addEventListener("change", renderTable);
-}
-
-if (elements.typeFilter) {
-  elements.typeFilter.addEventListener("change", renderTable);
-}
-
-if (elements.refresh) {
-  elements.refresh.addEventListener("click", loadData);
-}
-
-if (elements.clear) {
-  elements.clear.addEventListener("click", () => {
-    if (elements.search) elements.search.value = "";
-
-    if (elements.typeFilter) {
-      elements.typeFilter.value = "";
-    }
-
-    renderTable();
-  });
-}
-
-/* =========================================================
-   STARTUP
-   ========================================================= */
-
-renderHeader();
-hideStatusMessages();
-loadData();
-
-// Refresh the published spreadsheet every 60 seconds.
-setInterval(loadData, CONFIG.refreshInterval);
-
-// Register the service worker used by this PWA.
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker
-      .register("./sw.js")
-      .catch(error => {
-        console.warn(
-          "Service worker registration failed:",
-          error
-        );
-      });
-  });
-}
+refreshData();
+setInterval(refreshData, REFRESH_INTERVAL_MS);
