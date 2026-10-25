@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#14211e">
+  <meta name="description" content="Read-only winery laboratory analysis viewer for Fratelli Vineyards THA Akluj.">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="assets/fratelli-logo.png">
+  <link rel="stylesheet" href="styles.css">
+  <title>FRATELLI VINEYARDS | Lab Analysis</title>
+</head>
+<body>
+  <header class="topbar">
+    <img class="logo" src="assets/fratelli-logo.png" alt="Fratelli Vineyards logo">
+    <div class="brand"><h1>FRATELLI VINEYARDS</h1><p>THA AKLUJ · WINERY LABORATORY</p></div>
+  </header>
+  <main>
+    <section class="intro"><div><p class="eyebrow">LAB ANALYSIS VIEWER</p><h2>Wine analysis, tank by tank.</h2><p class="muted">Search results from the THA Akluj sheet.</p></div><button id="refreshBtn" class="refresh" type="button">↻ Refresh</button></section>
+    <section class="status-row"><span id="status" class="status">Waiting for data source setup</span><span id="updatedAt" class="muted small"></span></section>
+    <section class="controls">
+      <label for="searchInput">Search tank or wine</label>
+      <input id="searchInput" type="search" placeholder="e.g. Tank 113, Chardonnay, batch…" autocomplete="off">
+      <div class="filters"><label for="viewMode">Group results by</label><select id="viewMode"><option value="tank">Tank</option><option value="wine">Wine</option><option value="none">All rows</option></select><label class="date-label" for="dateFilter">Analysis date from</label><input id="dateFilter" type="date"></div>
+    </section>
+    <section class="summary" aria-live="polite"><div class="summary-card"><span>Rows shown</span><strong id="rowCount">—</strong></div><div class="summary-card"><span>Tanks / wines</span><strong id="groupCount">—</strong></div><div class="summary-card"><span>Latest analysis</span><strong id="latestDate">—</strong></div></section>
+    <div id="message" class="message">To connect your sheet, follow README.md and paste its published CSV URL into app.js.</div>
+    <section id="results" class="results" aria-live="polite"></section>
+  </main>
+  <footer><p>FRATELLI VINEYARDS</p><span>Designed by AKASH BHALKE</span></footer>
+  <script src="app.js"></script>
+</body>
+</html>
