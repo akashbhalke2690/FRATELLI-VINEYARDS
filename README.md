@@ -25,7 +25,7 @@ A Google Sheets **Publish to web** CSV can be viewed by anyone who has the publi
 6. Copy the published CSV URL. Do not use the normal `/edit?...` browser URL.
 7. In GitHub, open `app.js`, click the pencil icon, and find this line near the top:
 
-   `const CSV_URL = "PASTE_PUBLISHED_THA_AKLUJ_CSV_URL_HERE";`
+   `const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTG6up-T62Nqm9cx6OSLzjzSD-VgT19juQAyrhcqiMpCp7YNXDr9oweSRPzDIHfVlaGJu9k9fPp6pgf/pub?gid=1330000360&single=true&output=csv";`
 
 8. Replace the text inside the quotes with the CSV URL you copied. Keep the quotes. Click **Commit changes**.
 
